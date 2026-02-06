@@ -10,6 +10,14 @@ interface VideoMeta {
   createdAt: string;
 }
 
+interface Comment {
+  id: string;
+  name: string;
+  text: string;
+  timestamp: number;
+  createdAt: string;
+}
+
 export default function VideoPlayer({ shareId }: { shareId: string }) {
   const [meta, setMeta] = useState<VideoMeta | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -25,10 +33,19 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
   const [playbackRate, setPlaybackRate] = useState(1);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
 
+  // Comments state
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [commentName, setCommentName] = useState('');
+  const [commentText, setCommentText] = useState('');
+  const [commentTimestamp, setCommentTimestamp] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeComment, setActiveComment] = useState<Comment | null>(null);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const progressRef = useRef<HTMLDivElement>(null);
+  const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     const { data: urlData } = supabase.storage
@@ -39,6 +56,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
       setVideoUrl(urlData.publicUrl);
     }
 
+    // Load metadata
     supabase.storage
       .from('recordings')
       .download(`videos/${shareId}.json`)
@@ -51,8 +69,90 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
       })
       .catch(() => {});
 
+    // Load comments
+    loadComments();
+
     setLoading(false);
   }, [shareId]);
+
+  const loadComments = async () => {
+    try {
+      const { data, error } = await supabase.storage
+        .from('recordings')
+        .download(`videos/${shareId}-comments.json`);
+      if (data && !error) {
+        const text = await data.text();
+        const parsed = JSON.parse(text);
+        setComments(parsed);
+      }
+    } catch {}
+  };
+
+  const saveComment = async () => {
+    if (!commentText.trim() || !commentName.trim()) return;
+    setIsSubmitting(true);
+
+    const newComment: Comment = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: commentName.trim(),
+      text: commentText.trim(),
+      timestamp: commentTimestamp,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updatedComments = [...comments, newComment].sort((a, b) => a.timestamp - b.timestamp);
+
+    try {
+      // Delete old file first (upsert not supported for storage easily)
+      await supabase.storage.from('recordings').remove([`videos/${shareId}-comments.json`]);
+
+      await supabase.storage
+        .from('recordings')
+        .upload(`videos/${shareId}-comments.json`, JSON.stringify(updatedComments), {
+          contentType: 'application/json',
+          upsert: false,
+        });
+
+      setComments(updatedComments);
+      setCommentText('');
+    } catch (err) {
+      console.error('Failed to save comment:', err);
+    }
+    setIsSubmitting(false);
+  };
+
+  const deleteComment = async (commentId: string) => {
+    const updatedComments = comments.filter(c => c.id !== commentId);
+    try {
+      await supabase.storage.from('recordings').remove([`videos/${shareId}-comments.json`]);
+      if (updatedComments.length > 0) {
+        await supabase.storage
+          .from('recordings')
+          .upload(`videos/${shareId}-comments.json`, JSON.stringify(updatedComments), {
+            contentType: 'application/json',
+            upsert: false,
+          });
+      }
+      setComments(updatedComments);
+    } catch {}
+  };
+
+  const jumpToTimestamp = (timestamp: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = timestamp;
+      videoRef.current.play();
+      setIsPlaying(true);
+    }
+  };
+
+  const addCommentAtCurrentTime = () => {
+    if (videoRef.current) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+      setCommentTimestamp(Math.floor(videoRef.current.currentTime));
+      setTimeout(() => commentInputRef.current?.focus(), 100);
+    }
+  };
 
   const formatTime = (seconds: number) => {
     if (isNaN(seconds)) return '0:00';
@@ -64,6 +164,22 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
   const formatDate = (dateStr: string) => {
     try {
       return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch { return ''; }
+  };
+
+  const formatCommentDate = (dateStr: string) => {
+    try {
+      const date = new Date(dateStr);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      if (diffMins < 1) return 'just now';
+      if (diffMins < 60) return `${diffMins}m ago`;
+      const diffHours = Math.floor(diffMins / 60);
+      if (diffHours < 24) return `${diffHours}h ago`;
+      const diffDays = Math.floor(diffHours / 24);
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     } catch { return ''; }
   };
 
@@ -115,6 +231,13 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
     if (videoRef.current) videoRef.current.currentTime = Math.max(0, Math.min(videoRef.current.currentTime + seconds, videoDuration));
   };
 
+  // Check for active comments during playback
+  useEffect(() => {
+    const rounded = Math.floor(currentTime);
+    const active = comments.find(c => c.timestamp === rounded);
+    setActiveComment(active || null);
+  }, [currentTime, comments]);
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -124,11 +247,12 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
         case 'm': e.preventDefault(); toggleMute(); break;
         case 'ArrowLeft': e.preventDefault(); skip(-10); break;
         case 'ArrowRight': e.preventDefault(); skip(10); break;
+        case 'c': e.preventDefault(); addCommentAtCurrentTime(); break;
       }
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [isPlaying, volume, videoDuration]);
+  }, [isPlaying, volume, videoDuration, comments]);
 
   useEffect(() => {
     const handleFSChange = () => setIsFullscreen(!!document.fullscreenElement);
@@ -181,6 +305,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
       </header>
 
       <div className="max-w-5xl mx-auto px-6 py-8">
+        {/* Video Player */}
         <div ref={containerRef} className="relative rounded-xl overflow-hidden group" style={{ background: '#000', aspectRatio: '16/9' }}
              onMouseMove={handleMouseMove} onMouseLeave={() => isPlaying && setShowControls(false)}>
           
@@ -190,6 +315,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
             onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)}
             onEnded={() => { setIsPlaying(false); setShowControls(true); }} playsInline />
 
+          {/* Big Play Button */}
           {!isPlaying && (
             <div className="absolute inset-0 flex items-center justify-center cursor-pointer" onClick={togglePlay}>
               <div className="w-20 h-20 rounded-full flex items-center justify-center transition-smooth hover:scale-110"
@@ -199,12 +325,33 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
             </div>
           )}
 
+          {/* Active Comment Bubble */}
+          {activeComment && isPlaying && (
+            <div className="absolute top-4 left-4 right-4 flex justify-center pointer-events-none" style={{ zIndex: 10 }}>
+              <div className="px-4 py-2 rounded-lg text-sm text-white max-w-md text-center"
+                   style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)' }}>
+                <span className="font-semibold text-blue-400">{activeComment.name}</span>: {activeComment.text}
+              </div>
+            </div>
+          )}
+
+          {/* Controls */}
           <div className={`absolute bottom-0 left-0 right-0 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
                style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.85))' }}>
             
+            {/* Progress Bar with Comment Markers */}
             <div ref={progressRef} className="relative h-1.5 mx-4 mt-4 cursor-pointer group/progress" onClick={handleProgressClick}
                  style={{ background: 'rgba(255,255,255,0.2)' }}>
               <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${progress}%`, background: '#3B82F6' }} />
+              
+              {/* Comment dots on progress bar */}
+              {videoDuration > 0 && comments.map((comment) => (
+                <div key={comment.id}
+                     className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-yellow-400 hover:scale-150 transition-transform cursor-pointer"
+                     style={{ left: `${(comment.timestamp / videoDuration) * 100}%`, transform: 'translate(-50%, -50%)', zIndex: 5 }}
+                     title={`${comment.name}: ${comment.text}`}
+                     onClick={(e) => { e.stopPropagation(); jumpToTimestamp(comment.timestamp); }} />
+              ))}
             </div>
 
             <div className="flex items-center gap-3 px-4 py-3">
@@ -235,6 +382,13 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
               <span className="text-white/70 text-xs font-mono ml-1">{formatTime(currentTime)} / {formatTime(videoDuration)}</span>
 
               <div className="flex-1" />
+
+              {/* Comment button */}
+              <button onClick={addCommentAtCurrentTime} className="text-white/70 hover:text-yellow-400 transition-colors" title="Add comment (C)">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+                </svg>
+              </button>
 
               <div className="relative">
                 <button onClick={() => setShowSpeedMenu(!showSpeedMenu)}
@@ -267,30 +421,119 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
           </div>
         </div>
 
-        <div className="mt-6 space-y-4">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{meta?.title || 'Untitled Recording'}</h1>
-            <div className="flex items-center gap-3 text-sm" style={{ color: 'var(--text-secondary)' }}>
-              {meta?.client && (
-                <>
-                  <span className="px-2.5 py-0.5 rounded-md text-xs font-medium" style={{ background: 'var(--bg-tertiary)', color: '#3B82F6' }}>{meta.client}</span>
-                  <span>·</span>
-                </>
-              )}
-              {meta?.createdAt && <span>{formatDate(meta.createdAt)}</span>}
-              {meta?.duration !== undefined && meta.duration > 0 && (
-                <><span>·</span><span>{formatTime(meta.duration)}</span></>
-              )}
+        {/* Video Info */}
+        <div className="mt-6 space-y-2">
+          <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{meta?.title || 'Untitled Recording'}</h1>
+          <div className="flex items-center gap-3 text-sm" style={{ color: 'var(--text-secondary)' }}>
+            {meta?.client && (
+              <>
+                <span className="px-2.5 py-0.5 rounded-md text-xs font-medium" style={{ background: 'var(--bg-tertiary)', color: '#3B82F6' }}>{meta.client}</span>
+                <span>·</span>
+              </>
+            )}
+            {meta?.createdAt && <span>{formatDate(meta.createdAt)}</span>}
+            {meta?.duration !== undefined && meta.duration > 0 && (
+              <><span>·</span><span>{formatTime(meta.duration)}</span></>
+            )}
+            <span>·</span>
+            <span>{comments.length} comment{comments.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+
+        {/* Comments Section */}
+        <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          {/* Add Comment Form */}
+          <div className="lg:col-span-1">
+            <div className="glass-card p-5 space-y-4 sticky top-8">
+              <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+                💬 Add Comment
+              </h3>
+              <div>
+                <label className="text-xs block mb-1.5" style={{ color: 'var(--text-secondary)' }}>Your Name</label>
+                <input type="text" value={commentName} onChange={(e) => setCommentName(e.target.value)}
+                       placeholder="e.g. John"
+                       className="w-full px-3 py-2 rounded-lg text-sm outline-none transition-smooth"
+                       style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)' }} />
+              </div>
+              <div>
+                <label className="text-xs block mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  Comment at <span className="font-mono text-blue-400">{formatTime(commentTimestamp)}</span>
+                </label>
+                <textarea ref={commentInputRef} value={commentText} onChange={(e) => setCommentText(e.target.value)}
+                          placeholder="Type your feedback..."
+                          rows={3}
+                          className="w-full px-3 py-2 rounded-lg text-sm outline-none transition-smooth resize-none"
+                          style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)' }}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveComment(); }} />
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={addCommentAtCurrentTime}
+                        className="px-3 py-2 rounded-lg text-xs transition-smooth"
+                        style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>
+                  📍 Use Current Time
+                </button>
+                <button onClick={saveComment}
+                        disabled={!commentText.trim() || !commentName.trim() || isSubmitting}
+                        className="flex-1 px-4 py-2 rounded-lg text-xs font-semibold text-white transition-smooth hover:scale-105 disabled:opacity-40 disabled:hover:scale-100"
+                        style={{ background: 'linear-gradient(135deg, #3B82F6, #2563EB)' }}>
+                  {isSubmitting ? 'Posting...' : 'Post Comment'}
+                </button>
+              </div>
+              <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>Tip: Press <kbd className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>C</kbd> while watching to comment at that moment. <kbd className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>Ctrl+Enter</kbd> to post.</p>
             </div>
           </div>
 
-          <div className="glass-card p-4 flex items-center gap-6 text-xs" style={{ color: 'var(--text-secondary)' }}>
-            <span className="font-medium" style={{ color: 'var(--text-primary)' }}>Shortcuts:</span>
-            <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>Space</kbd> Play/Pause</span>
-            <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>←</kbd><kbd className="px-1.5 py-0.5 rounded text-[10px] ml-0.5" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>→</kbd> Skip 10s</span>
-            <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>F</kbd> Fullscreen</span>
-            <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>M</kbd> Mute</span>
+          {/* Comments List */}
+          <div className="lg:col-span-2 space-y-3">
+            <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+              Comments ({comments.length})
+            </h3>
+            
+            {comments.length === 0 ? (
+              <div className="glass-card p-8 text-center">
+                <div className="text-3xl mb-3">💬</div>
+                <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>No comments yet. Be the first to leave feedback!</p>
+              </div>
+            ) : (
+              comments.map((comment) => (
+                <div key={comment.id} className="glass-card p-4 transition-smooth hover:border-blue-500/20"
+                     style={activeComment?.id === comment.id ? { borderColor: 'rgba(59,130,246,0.5)', boxShadow: '0 0 12px rgba(59,130,246,0.15)' } : {}}>
+                  <div className="flex items-start gap-3">
+                    {/* Avatar */}
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
+                         style={{ background: `hsl(${comment.name.charCodeAt(0) * 7 % 360}, 60%, 50%)` }}>
+                      {comment.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{comment.name}</span>
+                        <button onClick={() => jumpToTimestamp(comment.timestamp)}
+                                className="text-xs font-mono px-1.5 py-0.5 rounded transition-smooth hover:scale-105"
+                                style={{ background: 'rgba(59,130,246,0.15)', color: '#60A5FA' }}>
+                          {formatTime(comment.timestamp)}
+                        </button>
+                        <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>{formatCommentDate(comment.createdAt)}</span>
+                      </div>
+                      <p className="text-sm mt-1" style={{ color: 'var(--text-primary)', lineHeight: '1.5' }}>{comment.text}</p>
+                    </div>
+                    <button onClick={() => deleteComment(comment.id)} className="text-xs shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                            style={{ color: 'var(--text-secondary)' }} title="Delete">✕</button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
+        </div>
+
+        {/* Shortcuts */}
+        <div className="mt-8 glass-card p-4 flex items-center gap-6 text-xs flex-wrap" style={{ color: 'var(--text-secondary)' }}>
+          <span className="font-medium" style={{ color: 'var(--text-primary)' }}>Shortcuts:</span>
+          <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>Space</kbd> Play/Pause</span>
+          <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>←</kbd><kbd className="px-1.5 py-0.5 rounded text-[10px] ml-0.5" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>→</kbd> Skip 10s</span>
+          <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>F</kbd> Fullscreen</span>
+          <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>M</kbd> Mute</span>
+          <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>C</kbd> Comment</span>
         </div>
       </div>
 
