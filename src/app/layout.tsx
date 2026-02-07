@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'ScreenCast — Record, Share, Collaborate',
-  description: 'Free screen recording tool for performance marketers. Record your screen, get AI insights, share with clients.',
+  title: 'Click Thrive Marketing — Video Reviews & Client Collaboration',
+  description: 'Record ad account reviews, campaign walkthroughs, and strategy videos. Share with clients and get feedback in one place.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
