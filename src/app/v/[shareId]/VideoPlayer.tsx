@@ -33,7 +33,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
   const [playbackRate, setPlaybackRate] = useState(1);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
 
-  // Comments state
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentName, setCommentName] = useState('');
   const [commentText, setCommentText] = useState('');
@@ -56,7 +55,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
       setVideoUrl(urlData.publicUrl);
     }
 
-    // Load metadata
     supabase.storage
       .from('recordings')
       .download(`videos/${shareId}.json`)
@@ -69,9 +67,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
       })
       .catch(() => {});
 
-    // Load comments
     loadComments();
-
     setLoading(false);
   }, [shareId]);
 
@@ -82,8 +78,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
         .download(`videos/${shareId}-comments.json`);
       if (data && !error) {
         const text = await data.text();
-        const parsed = JSON.parse(text);
-        setComments(parsed);
+        setComments(JSON.parse(text));
       }
     } catch {}
   };
@@ -103,16 +98,13 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
     const updatedComments = [...comments, newComment].sort((a, b) => a.timestamp - b.timestamp);
 
     try {
-      // Delete old file first (upsert not supported for storage easily)
       await supabase.storage.from('recordings').remove([`videos/${shareId}-comments.json`]);
-
       await supabase.storage
         .from('recordings')
         .upload(`videos/${shareId}-comments.json`, JSON.stringify(updatedComments), {
           contentType: 'application/json',
           upsert: false,
         });
-
       setComments(updatedComments);
       setCommentText('');
     } catch (err) {
@@ -138,7 +130,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
   };
 
   const jumpToTimestamp = (timestamp: number) => {
-    if (videoRef.current) {
+    if (videoRef.current && isFinite(timestamp)) {
       videoRef.current.currentTime = timestamp;
       videoRef.current.play();
       setIsPlaying(true);
@@ -155,7 +147,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
   };
 
   const formatTime = (seconds: number) => {
-    if (isNaN(seconds)) return '0:00';
+    if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -203,9 +195,9 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
   };
 
   const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!progressRef.current || !videoRef.current) return;
+    if (!progressRef.current || !videoRef.current || !videoDuration) return;
     const rect = progressRef.current.getBoundingClientRect();
-    const pos = (e.clientX - rect.left) / rect.width;
+    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     videoRef.current.currentTime = pos * videoDuration;
   };
 
@@ -228,10 +220,11 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
   };
 
   const skip = (seconds: number) => {
-    if (videoRef.current) videoRef.current.currentTime = Math.max(0, Math.min(videoRef.current.currentTime + seconds, videoDuration));
+    if (videoRef.current && videoDuration) {
+      videoRef.current.currentTime = Math.max(0, Math.min(videoRef.current.currentTime + seconds, videoDuration));
+    }
   };
 
-  // Check for active comments during playback
   useEffect(() => {
     const rounded = Math.floor(currentTime);
     const active = comments.find(c => c.timestamp === rounded);
@@ -305,7 +298,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
       </header>
 
       <div className="max-w-5xl mx-auto px-6 py-8">
-        {/* Video Player */}
         <div ref={containerRef} className="relative rounded-xl overflow-hidden group" style={{ background: '#000', aspectRatio: '16/9' }}
              onMouseMove={handleMouseMove} onMouseLeave={() => isPlaying && setShowControls(false)}>
           
@@ -315,7 +307,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
             onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)}
             onEnded={() => { setIsPlaying(false); setShowControls(true); }} playsInline />
 
-          {/* Big Play Button */}
           {!isPlaying && (
             <div className="absolute inset-0 flex items-center justify-center cursor-pointer" onClick={togglePlay}>
               <div className="w-20 h-20 rounded-full flex items-center justify-center transition-smooth hover:scale-110"
@@ -325,7 +316,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
             </div>
           )}
 
-          {/* Active Comment Bubble */}
           {activeComment && isPlaying && (
             <div className="absolute top-4 left-4 right-4 flex justify-center pointer-events-none" style={{ zIndex: 10 }}>
               <div className="px-4 py-2 rounded-lg text-sm text-white max-w-md text-center"
@@ -335,19 +325,16 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
             </div>
           )}
 
-          {/* Controls */}
           <div className={`absolute bottom-0 left-0 right-0 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
                style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.85))' }}>
             
-            {/* Progress Bar with Comment Markers */}
             <div ref={progressRef} className="relative h-1.5 mx-4 mt-4 cursor-pointer group/progress" onClick={handleProgressClick}
                  style={{ background: 'rgba(255,255,255,0.2)' }}>
               <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${progress}%`, background: '#3B82F6' }} />
               
-              {/* Comment dots on progress bar */}
               {videoDuration > 0 && comments.map((comment) => (
                 <div key={comment.id}
-                     className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-yellow-400 hover:scale-150 transition-transform cursor-pointer"
+                     className="absolute top-1/2 w-2.5 h-2.5 rounded-full bg-yellow-400 hover:scale-150 transition-transform cursor-pointer"
                      style={{ left: `${(comment.timestamp / videoDuration) * 100}%`, transform: 'translate(-50%, -50%)', zIndex: 5 }}
                      title={`${comment.name}: ${comment.text}`}
                      onClick={(e) => { e.stopPropagation(); jumpToTimestamp(comment.timestamp); }} />
@@ -383,7 +370,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
 
               <div className="flex-1" />
 
-              {/* Comment button */}
               <button onClick={addCommentAtCurrentTime} className="text-white/70 hover:text-yellow-400 transition-colors" title="Add comment (C)">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
@@ -421,7 +407,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
           </div>
         </div>
 
-        {/* Video Info */}
         <div className="mt-6 space-y-2">
           <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{meta?.title || 'Untitled Recording'}</h1>
           <div className="flex items-center gap-3 text-sm" style={{ color: 'var(--text-secondary)' }}>
@@ -440,10 +425,8 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
           </div>
         </div>
 
-        {/* Comments Section */}
         <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
           
-          {/* Add Comment Form */}
           <div className="lg:col-span-1">
             <div className="glass-card p-5 space-y-4 sticky top-8">
               <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
@@ -484,7 +467,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
             </div>
           </div>
 
-          {/* Comments List */}
           <div className="lg:col-span-2 space-y-3">
             <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
               Comments ({comments.length})
@@ -500,7 +482,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
                 <div key={comment.id} className="glass-card p-4 transition-smooth hover:border-blue-500/20"
                      style={activeComment?.id === comment.id ? { borderColor: 'rgba(59,130,246,0.5)', boxShadow: '0 0 12px rgba(59,130,246,0.15)' } : {}}>
                   <div className="flex items-start gap-3">
-                    {/* Avatar */}
                     <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
                          style={{ background: `hsl(${comment.name.charCodeAt(0) * 7 % 360}, 60%, 50%)` }}>
                       {comment.name.charAt(0).toUpperCase()}
@@ -517,7 +498,7 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
                       </div>
                       <p className="text-sm mt-1" style={{ color: 'var(--text-primary)', lineHeight: '1.5' }}>{comment.text}</p>
                     </div>
-                    <button onClick={() => deleteComment(comment.id)} className="text-xs shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                    <button onClick={() => deleteComment(comment.id)} className="text-xs shrink-0 opacity-30 hover:opacity-100 transition-opacity"
                             style={{ color: 'var(--text-secondary)' }} title="Delete">✕</button>
                   </div>
                 </div>
@@ -526,7 +507,6 @@ export default function VideoPlayer({ shareId }: { shareId: string }) {
           </div>
         </div>
 
-        {/* Shortcuts */}
         <div className="mt-8 glass-card p-4 flex items-center gap-6 text-xs flex-wrap" style={{ color: 'var(--text-secondary)' }}>
           <span className="font-medium" style={{ color: 'var(--text-primary)' }}>Shortcuts:</span>
           <span><kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>Space</kbd> Play/Pause</span>
